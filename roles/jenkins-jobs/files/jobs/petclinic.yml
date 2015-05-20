@@ -72,7 +72,7 @@
           docker build -t wouterla/docker-petclinic .
 
           echo "Pushing docker image to repository"
-          docker push wouterla/docker-petclinic
+          #docker push wouterla/docker-petclinic
 
 - builder:
     name: deploy
@@ -276,4 +276,4 @@
       - '{name}-release-production':
           pipeline-stage: 'production'
           env: 'production'
-          next-job: 'done'          
+          next-job: 'done'
