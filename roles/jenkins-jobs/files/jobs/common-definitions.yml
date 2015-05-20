@@ -1,0 +1,11 @@
+- publisher:
+    name: trigger-with-params
+    publishers:
+      - trigger-parameterized-builds:
+        - project: '{next-job}'
+          condition: "UNSTABLE_OR_BETTER"
+          predefined-parameters: |
+            BUILD_NUM=$BUILD_NUMBER
+            PIPELINE_GIT_HASH=$GIT_COMMIT
+          git-revision: true
+          current-parameters: true

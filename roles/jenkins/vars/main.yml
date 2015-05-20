@@ -1,0 +1,3 @@
+jenkins_public_url: http://jenkins
+docker_host: tcp://172.17.8.101:2375
+fleet_tunnel: 172.17.8.101

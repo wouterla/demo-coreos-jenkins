@@ -1,0 +1,58 @@
+#cloud-config
+
+---
+write_files:
+- path: /home/core/.dockercfg
+  permissions: 420
+  owner: core
+  content: |
+    {
+          "https://index.docker.io/v1/": {
+                  "auth": "d291dGVybGE6MTEyd2Fsc00=",
+                  "email": "wouter@lagerweij.com"
+          }
+    }
+- path: /etc/systemd/system/docker.service.d/50-registry.conf
+  owner: core:core
+  permissions: 420
+  content: |
+    [Service]
+    Environment="DOCKER_OPTS=--registry-mirror http://172.17.8.1:5000 --insecure-registry 172.17.8.1:5000"
+coreos:
+  etcd:
+    discovery: https://discovery.etcd.io/bf39079f570cf44721128c277a6e290f
+    addr: $public_ipv4:4001
+    peer-addr: $public_ipv4:7001
+  fleet:
+    public-ip: $public_ipv4
+  flannel:
+    interface: $public_ipv4
+  units:
+  - name: etcd.service
+    command: start
+  - name: fleet.service
+    command: start
+  - name: docker-tcp.socket
+    command: start
+    enable: true
+    content: |
+      [Unit]
+      Description=Docker Socket for the API
+
+      [Socket]
+      ListenStream=2375
+      Service=docker.service
+      BindIPv6Only=both
+
+      [Install]
+      WantedBy=sockets.target
+  - name: daemon-reload.service
+    command: start
+    content: |
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/bin/systemctl daemon-reload
+  - name: docker.service
+    command: restart
+  - update:
+      reboot-strategy: 'off'

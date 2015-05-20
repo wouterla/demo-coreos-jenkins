@@ -1,0 +1,30 @@
+- name: Create target directory
+  file: path={{ playbook_dir }}/build/jenkins_home/ state=directory
+
+- name: Recreate the base jenkins configuration
+  template: src=config.xml.j2 dest={{ playbook_dir }}/build/jenkins_home/config.xml
+
+- name: Plugin configurations
+  template: src={{ item.src }} dest={{ playbook_dir }}/build/jenkins_home/{{ item.dest }}
+  with_items:
+    - src: jenkins.model.JenkinsLocationConfiguration.xml.j2
+      dest: jenkins.model.JenkinsLocationConfiguration.xml
+    - src: jenkins.mvn.GlobalMavenConfig.xml
+      dest: jenkins.mvn.GlobalMavenConfig.xml
+    - src: hudson.tasks.Maven.xml
+      dest: hudson.tasks.Maven.xml
+
+- name: Copy credentials.xml file
+  copy: src=credentials.xml dest={{ playbook_dir }}/build/jenkins_home/
+
+- name: Set dockercfg file
+  copy: src=dockercfg dest={{ playbook_dir }}/build/jenkins_home/.dockercfg
+
+- name: Create .ssh directory
+  file: path={{ playbook_dir }}/build/jenkins_home/.ssh state=directory mode=0700
+
+- name: Add (vagrant) ssh key
+  copy: src=insecure_private_key dest={{ playbook_dir }}/build/jenkins_home/.ssh/id_rsa mode=0600
+
+- name: Copy coreos support scripts
+  copy: src=collect-endpoints.sh dest={{ playbook_dir }}/build/bin/ mode=755 

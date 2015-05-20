@@ -1,0 +1,279 @@
+- defaults:
+    name: global
+    project-type: freestyle
+    wrappers:
+      - ssh-agent-credentials:
+          user: 'd2610699-bea9-4b74-8022-1ad70dc3d5e8'
+    properties:
+      - delivery-pipeline:
+          stage: '{pipeline-stage}'
+    scm:
+      - git:
+          name: origin
+          url: '{gitrepo}'
+          skip-tag: true
+          wipe-workspace: false
+          branches:
+            - '{branch}'
+    publishers:
+      - trigger-parameterized-builds:
+          - project: '{next-job}'
+            condition: "UNSTABLE_OR_BETTER"
+            git-revision: true
+            current-parameters: true
+
+- builder:
+    name: java
+    builders:
+      - maven-target:
+          goals: '{goals}'
+
+- job-template:
+    name: 'poll-service-build'
+    builders:
+      - maven-target:
+          goals: 'clean install'
+      - maven-target:
+          goals: '-pl poll-web docker:build docker:push'
+
+- job-template:
+    name: '{name}-test'
+    builders:
+      - maven-target:
+          goals: '{goals}'
+
+- job-template:
+    name: '{name}-package'
+    builders:
+      - maven-target:
+          goals: '{goals}'
+
+- job-template:
+    name: '{name}-start'
+
+- job-template:
+    name: '{name}-create-docker-image'
+    builders:
+      - maven-target:
+          goals: 'clean install'
+      - shell: |
+          #!/bin/bash
+          set -x
+          export DOCKER_HOST=${{DOCKER_HOST}}
+
+          echo "Clean..."
+          rm -rf build && mkdir build
+
+          echo "Copying docker files"
+          cp docker/* target/
+
+          echo "Running docker"
+          cd target/
+          docker build -t wouterla/docker-petclinic .
+
+          echo "Pushing docker image to repository"
+          docker push wouterla/docker-petclinic
+
+- builder:
+    name: deploy
+    builders:
+      - shell: |
+          #!/bin/bash
+          set -x
+          set +e
+          export FLEETCTL_TUNNEL=${{FLEET_TUNNEL}}
+          fleetctl -strict-host-key-checking=false destroy {name}@.service {name}-announce@.service
+          set -e
+          fleetctl -strict-host-key-checking=false submit coreos/{name}@.service coreos/{name}-announce@.service
+          fleetctl -strict-host-key-checking=false start {name}@${{GIT_COMMIT}}-{{1..3}}-{env}.service {name}-announce@${{GIT_COMMIT}}-{{1..3}}-{env}.service
+
+- job-template:
+    name: '{name}-deploy-test'
+    builders:
+      - deploy:
+          name: '{name}'
+          env: '{env}'
+          external-port: '{external-port}'
+          internal-port: '{internal-port}'
+
+- job-template:
+    name: '{name}-deploy-production'
+    builders:
+      - deploy:
+          name: '{name}'
+          env: '{env}'
+          external-port: '{external-port}'
+          internal-port: '{internal-port}'
+
+- builder:
+    name: integration-test
+    builders:
+      - shell: |
+          #!/bin/bash
+          set -v
+          set -e
+          export ETCDCTL_PEERS=http://${{FLEET_TUNNEL}}:4001
+          echo "GIT COMMIT = ${{GIT_COMMIT}}"
+
+          attempt="0"
+          instances="0"
+          while [ $attempt -le 15 ] && [ $instances -lt 3 ]
+          do
+            echo "Waiting for instances to come online ${{attempt}}"
+            sleep 5
+
+            instances=$(etcdctl ls /demo/instances/{env}/{name}/${{GIT_COMMIT}} |  wc -l)
+
+            echo "Found $instances."
+
+            attempt=$((attempt+1))
+          done
+
+          if [ $instances -lt 3 ]
+          then
+            echo "Failed to find all started instances"
+            exit 1
+          fi
+
+- job-template:
+    name: '{name}-test-integration-test'
+    builders:
+      - integration-test:
+          name: '{name}'
+          env: '{env}'
+          external-port: '{external-port}'
+
+- job-template:
+    name: '{name}-production-integration-test'
+    builders:
+      - integration-test:
+          name: '{name}'
+          env: '{env}'
+          external-port: '{external-port}'
+
+- job-template:
+    name: '{name}-release-test'
+    builders:
+      - release:
+          name: '{name}'
+          env: '{env}'
+
+- job-template:
+    name: '{name}-release-production'
+    builders:
+      - release:
+          name: '{name}'
+          env: '{env}'
+
+- builder:
+    name: release
+    builders:
+      - shell: |
+          #!/bin/bash
+          set -x
+          set -e
+          export ETCDCTL_PEERS=http://${{FLEET_TUNNEL}}:4001
+          export BACKEND={name}-${{GIT_COMMIT}}
+          echo "BACKEND=$BACKEND"
+
+          # Ensure backend exists
+          etcdctl set /vulcand/backends/${{BACKEND}}/backend '{{"Type": "http"}}'
+
+          # Add new servers
+          # Gather endpoints
+          SERVERS=$(collect-endpoints.sh {env} {name} ${{GIT_COMMIT}})
+          COUNT=0
+          for HOST in $SERVERS; do
+            echo "Adding $HOST as server for {name}, ${{GIT_COMMIT}}"
+            COUNT=$((COUNT+1))
+            etcdctl set /vulcand/backends/${{BACKEND}}/servers/srv${{COUNT}} '{{"URL": "http://'${{HOST}}'"}}'
+          done
+
+          # Set up frontend
+          etcdctl set /vulcand/frontends/{name}-{env}/frontend '{{"Type": "http", "BackendId": "'${{BACKEND}}'", "Route": "Host(\"{name}.{env}\") && PathRegexp(\"/.*\")"}}'
+          # Above should be extended to "Route": "Host("<servicename>") && PathRegexp(\"/.*\")" ? And also add Method (GET/POST)?
+
+- job:
+    name: 'done'
+    project-type: freestyle
+    properties:
+      - delivery-pipeline:
+          stage: 'production'
+    scm: []
+    publishers: []
+
+- project:
+    name: petclinic
+    gitrepo: 'https://github.com/wouterla/spring-petclinic.git'
+    branch: 'master'
+    jobs:
+      - '{name}-start':
+          pipeline-stage: 'build'
+          next-job: 'petclinic-test'
+      - '{name}-test':
+          goals: 'install'
+          pipeline-stage: 'build'
+          next-job: 'petclinic-create-docker-image'
+      - '{name}-create-docker-image':
+          pipeline-stage: 'build'
+          next-job: 'petclinic-deploy-test'
+      - '{name}-deploy-test':
+          pipeline-stage: 'test'
+          env: 'test'
+          next-job: 'petclinic-test-integration-test'
+      - '{name}-test-integration-test':
+          pipeline-stage: 'test'
+          env: 'test'
+          next-job: '{name}-release-test'
+      - '{name}-release-test':
+          pipeline-stage: 'test'
+          env: 'test'
+          next-job: '{name}-deploy-production'
+      - '{name}-deploy-production':
+          pipeline-stage: 'production'
+          env: 'production'
+          next-job: 'petclinic-production-integration-test'
+      - '{name}-production-integration-test':
+          pipeline-stage: 'production'
+          env: 'production'
+          next-job: '{name}-release-production'
+      - '{name}-release-production':
+          pipeline-stage: 'production'
+          env: 'production'
+          next-job: 'done'
+
+- project:
+    name: poll-service
+    gitrepo: 'https://sbijl@bitbucket.org/sbijl/poll-service.git'
+    branch: 'dockerized'
+    jobs:
+      - '{name}-start':
+          pipeline-stage: 'build'
+          next-job: 'poll-service-build'
+      - 'poll-service-build':
+          pipeline-stage: 'build'
+          next-job: 'poll-service-deploy-test'
+      - '{name}-deploy-test':
+          pipeline-stage: 'test'
+          env: 'test'
+          next-job: 'poll-service-test-integration-test'
+      - '{name}-test-integration-test':
+          pipeline-stage: 'test'
+          env: 'test'
+          next-job: '{name}-release-test'
+      - '{name}-release-test':
+          pipeline-stage: 'test'
+          env: 'test'
+          next-job: '{name}-deploy-production'
+      - '{name}-deploy-production':
+          pipeline-stage: 'production'
+          env: 'production'
+          next-job: 'poll-service-production-integration-test'
+      - '{name}-production-integration-test':
+          pipeline-stage: 'production'
+          env: 'production'
+          next-job: '{name}-release-production'
+      - '{name}-release-production':
+          pipeline-stage: 'production'
+          env: 'production'
+          next-job: 'done'          

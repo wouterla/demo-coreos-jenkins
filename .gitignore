@@ -1,0 +1,10 @@
+.vagrant/
+base-vagrant/
+coreos-vagrant/
+registry/
+build/
+spring-petclinic/
+base-vagrant/.vagrant/
+base-vagrant/ubuntu-15-base.box
+prepared-vagrant/.vagrant
+prepared-vagrant/docker-jenkins-base.box

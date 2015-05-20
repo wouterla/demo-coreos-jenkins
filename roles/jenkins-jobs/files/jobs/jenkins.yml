@@ -1,0 +1,84 @@
+- defaults:
+    name: jenkins-jobs
+    project-type: freestyle
+    properties:
+      - delivery-pipeline:
+          stage: '{pipeline-stage}'
+    scm:
+      - git:
+          name: demo-coreos-jenkins
+          url: "https://github.com/wouterla/demo-coreos-jenkins.git"
+          skip-tag: true
+          wipe-workspace: false
+          branches:
+            - master
+    wrappers:
+      - ansicolor
+    hipchat:
+      enabled: false
+      room: San Diego development
+      start-notify: false
+
+- job:
+    name: 'jenkins-job-builder-create-docker-image'
+    defaults: jenkins-jobs
+    builders:
+      - shell: |
+          #!/bin/bash
+          set +x
+          export DOCKER_HOST=tcp://172.17.8.101:2375
+
+          echo "Clean..."
+          rm -rf build && mkdir build
+
+          echo "generating files with ansible"
+          ansible-playbook -i hosts_local site_jenkins_jobs_docker.yml
+
+          echo "Copying docker files"
+          cp docker/jenkins-job-builder/* build/
+
+          echo "Running docker"
+          cd build
+          docker build -t wouterla/docker-jenkins-job-builder .
+
+          echo "Pushing docker image to repository"
+          docker push wouterla/docker-jenkins-job-builder
+    publishers:
+      - trigger-with-params:
+          next-job: 'jenkins-job-builder-deploy'
+
+- job:
+    name: 'jenkins-job-builder-deploy'
+    defaults: jenkins-jobs
+    wrappers:
+      - ssh-agent-credentials:
+          user: 'd2610699-bea9-4b74-8022-1ad70dc3d5e8'
+    builders:
+      - shell: |
+          #!/bin/bash
+          set -x
+          set +e
+          export FLEETCTL_TUNNEL=172.17.8.101
+          fleetctl -strict-host-key-checking=false destroy jenkins-job-builder.service
+          set -e
+          fleetctl -strict-host-key-checking=false submit coreos/jenkins-job-builder.service
+          fleetctl -strict-host-key-checking=false start jenkins-job-builder.service
+    triggers:
+    publishers:
+      - trigger-with-params:
+          next-job: 'done'
+
+- project:
+    name: 'jenkins-job-builder'
+    jobs:
+      - '{name}-start':
+          next-job: 'jenkins-job-builder-create-docker-image'
+          gitrepo: 'demo-coreos-jenkins'
+          pipeline-stage: 'build'
+          branch: 'master'
+      - 'jenkins-job-builder-create-docker-image':
+          pipeline-stage: 'build'
+      - 'jenkins-job-builder-deploy':
+          pipeline-stage: 'production'
+      - done:
+          pipeline-stage: 'production'
